@@ -1,30 +1,37 @@
-import numpy as np
 import cv2
+import numpy as np
 import streamlit as st
 import mediapipe as mp
+
 from sklearn.svm import SVC
 
 from src.database.db import get_all_students
 
-# -------------------------
-# FACE MESH INIT
-# -------------------------
+
+# ---------------------------------------
+# FACE MESH
+# ---------------------------------------
+
 mp_face_mesh = mp.solutions.face_mesh
+
 face_mesh = mp_face_mesh.FaceMesh(
     static_image_mode=True,
     max_num_faces=1,
     refine_landmarks=True
 )
 
-# -------------------------
-# EMBEDDING (STABLE FIX)
-# -------------------------
+
+# ---------------------------------------
+# EMBEDDING
+# ---------------------------------------
+
 def get_face_embeddings(image_np):
 
     if image_np is None:
         return []
 
     rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
+
     results = face_mesh.process(rgb)
 
     if not results.multi_face_landmarks:
@@ -32,24 +39,35 @@ def get_face_embeddings(image_np):
 
     lm = results.multi_face_landmarks[0]
 
-    embedding = []
+    emb = []
 
-    for point in lm.landmark:
-        embedding.extend([point.x, point.y, point.z])
+    nose = lm.landmark[1]
 
-    emb = np.array(embedding, dtype=np.float32)
+    for p in lm.landmark:
+
+        emb.extend([
+            p.x - nose.x,
+            p.y - nose.y,
+            p.z - nose.z
+        ])
+
+    emb = np.asarray(emb, dtype=np.float32)
+
+    emb /= np.linalg.norm(emb)
 
     return [emb]
 
 
-# -------------------------
-# DATASET BUILDER (ROBUST FIX)
-# -------------------------
-def _prepare_dataset():
+# ---------------------------------------
+# BUILD DATASET
+# ---------------------------------------
+
+def prepare_dataset():
 
     students = get_all_students()
 
-    X, y = [], []
+    X = []
+    y = []
 
     for s in students:
 
@@ -58,95 +76,131 @@ def _prepare_dataset():
         if emb is None:
             continue
 
-        try:
-            emb = np.array(emb, dtype=np.float32).flatten()
+        emb = np.asarray(emb, dtype=np.float32).flatten()
 
-            if not np.isfinite(emb).all():
-                continue
-
-            X.append(emb)
-            y.append(s["student_id"])
-
-        except Exception:
+        if len(emb) != 1434:
             continue
 
-    if len(X) == 0:
-        return np.array([]), np.array([])
+        if not np.isfinite(emb).all():
+            continue
 
-    # enforce SAME DIMENSION dynamically (IMPORTANT FIX)
-    min_dim = min(len(x) for x in X)
+        emb /= np.linalg.norm(emb)
 
-    X_fixed = [x[:min_dim] for x in X]
+        X.append(emb)
+        y.append(int(s["student_id"]))
 
-    return np.array(X_fixed), np.array(y)
+    return np.array(X), np.array(y)
 
 
-# -------------------------
-# TRAIN MODEL
-# -------------------------
+# ---------------------------------------
+# TRAIN
+# ---------------------------------------
+
 @st.cache_resource
 def get_trained_model():
 
-    X, y = _prepare_dataset()
+    X, y = prepare_dataset()
 
-    if len(X) < 2:
-        return None, None, None
+    # No students
+    if len(X) == 0:
+        return None
 
-    clf = SVC(kernel="linear", probability=True)
+    # Less than 2 different students
+    if len(set(y)) < 2:
+
+        return {
+            "clf": None,
+            "X": X,
+            "y": y
+        }
+
+    clf = SVC(
+        kernel="linear",
+        probability=True,
+        class_weight="balanced"
+    )
+
     clf.fit(X, y)
 
-    return clf, X, y
+    return {
+        "clf": clf,
+        "X": X,
+        "y": y
+    }
+    
 
 
-# -------------------------
-# TRAIN WRAPPER
-# -------------------------
 def train_classifier():
+
     st.cache_resource.clear()
-    model = get_trained_model()
-    return model[0] is not None if model else False
 
+    return True
 
-# -------------------------
-# PREDICT ATTENDANCE (FIXED LOGIC)
-# -------------------------
+# ---------------------------------------
+# PREDICTION
+# ---------------------------------------
+
 def predict_attendance(image_np):
 
     encodings = get_face_embeddings(image_np)
 
     detected = {}
 
-    model_data = get_trained_model()
+    model = get_trained_model()
 
-    if model_data is None or model_data[0] is None or len(encodings) == 0:
-        return detected, [], 0
+    if model is None:
+        return detected, [], len(encodings)
 
-    clf, X_train, y_train = model_data
+    clf = model["clf"]
+    X = model["X"]
+    y = model["y"]
 
-    all_students = list(set(y_train))
+    if clf is None:
+        detected[int(y[0])] = True
+        return detected, list(set(y)), len(encodings)
 
-    for enc in encodings:
+    all_students = sorted(list(set(y)))
 
-        enc = enc.reshape(1, -1)
+    for emb in encodings:
 
-        pred = clf.predict(enc)[0]
-        proba = max(clf.predict_proba(enc)[0])
+        emb = emb.reshape(1, -1)
 
-        # similarity fallback (IMPORTANT FIX)
-        idx = list(y_train).index(pred)
-        stored_emb = X_train[idx]
+        prediction = int(clf.predict(emb)[0])
 
-        distance = np.linalg.norm(stored_emb - enc)
+        probability = float(np.max(clf.predict_proba(emb)))
 
-        # FINAL DECISION (FIXED)
-        if proba > 0.55 or distance < 0.65:
-            detected[int(pred)] = True
+        indices = np.where(y == prediction)[0]
+
+        distances = []
+
+        for idx in indices:
+
+            dist = np.linalg.norm(
+                X[idx] - emb[0]
+            )
+
+            distances.append(dist)
+
+        best_distance = min(distances)
+
+        print(
+            "Prediction:",
+            prediction,
+            "Probability:",
+            probability,
+            "Distance:",
+            best_distance
+        )
+
+        if probability >= 0.45 and best_distance <= 0.42:
+            detected[prediction] = True
 
     return detected, all_students, len(encodings)
 
 
-# -------------------------
-# SAFE ACCESSOR
-# -------------------------
+# ---------------------------------------
+# COMPATIBILITY
+# ---------------------------------------
+
 def get_face_embedding(image_np):
     return get_face_embeddings(image_np)

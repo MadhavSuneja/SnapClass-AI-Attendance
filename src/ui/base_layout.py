@@ -118,4 +118,4 @@ def style_base_layout():
         </style>  
 
                 """
-            ,unsafe_allow_html=True)
+            ,unsafe_allow_html=True) 
