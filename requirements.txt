@@ -4,14 +4,17 @@ streamlit
 numpy
 pandas
 
+# Visualization
+plotly
+matplotlib
+
 # Machine Learning
 scikit-learn
 setuptools<70
 
 # Face Recognition
-dlib
-face_recognition
-git+https://github.com/ageitgey/face_recognition_models
+opencv-python
+mediapipe==0.10.14
 
 # Database
 supabase
