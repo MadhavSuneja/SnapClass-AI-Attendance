@@ -2,9 +2,7 @@ import cv2
 import numpy as np
 import streamlit as st
 import mediapipe as mp
-
 from sklearn.svm import SVC
-
 from src.database.db import get_all_students
 
 

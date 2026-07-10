@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-
 from src.pipelines.voice_pipeline import process_bulk_audio
 from src.database.config import supabase
 from src.components.dialog_attendance_results import show_attendance_result
